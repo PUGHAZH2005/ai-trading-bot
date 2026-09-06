@@ -2,9 +2,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import plotly.graph_objects as go
-import json
 import os
 from openai import OpenAI
 
@@ -15,24 +13,41 @@ st.set_page_config(page_title="AI Trading Dashboard", layout="wide", page_icon="
 API_KEY = os.environ.get("OPENAI_API_KEY", "mock-key")
 client = OpenAI(api_key="xpl_45eaaa812fd1c31c38aa90bbb702f8e4d07b9ad5") if API_KEY != "mock-key" and API_KEY else None
 
-# --- BOT TOOLS ---
+# --- BOT TOOLS (Pure Pandas, No pandas_ta needed) ---
+def calculate_rsi(data, window=14):
+    delta = data['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
+
+def calculate_macd(data, fast=12, slow=26, signal=9):
+    exp1 = data['Close'].ewm(span=fast, adjust=False).mean()
+    exp2 = data['Close'].ewm(span=slow, adjust=False).mean()
+    macd = exp1 - exp2
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return macd, signal_line
+
 def get_detailed_stock_analysis(ticker: str) -> str:
     try:
         df = yf.download(ticker, period="3mo", progress=False)
-        if df.empty: return f"No data found for {ticker}"
+        if df.empty or len(df) < 30: return f"Insufficient data found for {ticker}"
         
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        macd = ta.macd(df['Close'])
-        df = pd.concat([df, macd], axis=1)
+        # Calculate indicators using pure pandas
+        df['RSI'] = calculate_rsi(df)
+        macd, signal = calculate_macd(df)
+        df['MACD'] = macd
+        df['MACD_Signal'] = signal
         
         latest = df.iloc[-1]
-        return f"Price: ${latest['Close']:.2f} | RSI(14): {latest['RSI']:.2f} | MACD: {latest['MACD_12_26_9']:.4f} | Vol: {int(latest['Volume'])}"
+        rsi_val = latest['RSI'] if pd.notna(latest['RSI']) else 50.0
+        macd_val = latest['MACD'] if pd.notna(latest['MACD']) else 0.0
+        
+        return f"Price: ${latest['Close']:.2f} | RSI(14): {rsi_val:.2f} | MACD: {macd_val:.4f} | Vol: {int(latest['Volume'])}"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error fetching data: {str(e)}"
 
 def get_memory():
-    # Note: Free cloud hosts reset local files on restart. 
-    # For permanent cloud memory, we use Streamlit's session state or a free DB like Supabase later.
     if "trade_journal" not in st.session_state:
         st.session_state.trade_journal = []
     return st.session_state.trade_journal
